@@ -1,0 +1,29 @@
+{
+    "name": "sidworks/sw-plugin-database-sync",
+    "description": "Sidworks Plugin Database Sync",
+    "type": "shopware-platform-plugin",
+    "version": "1.0.0",
+    "require": {
+        "shopware/core": "~6.6.0 || ~6.7.0"
+    },
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Sidworks"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Sidworks\\DatabaseSync\\": "src/"
+        }
+    },
+    "extra": {
+        "shopware-plugin-class": "Sidworks\\DatabaseSync\\SidworksDatabaseSync",
+        "label": {
+            "en-GB": "Sidworks Plugin Database Sync"
+        },
+        "description": {
+            "en-GB": "Sidworks Plugin Database Sync"
+        }
+    }
+}
