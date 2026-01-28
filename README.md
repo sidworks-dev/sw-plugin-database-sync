@@ -7,17 +7,11 @@ A Shopware 6 plugin for syncing databases from staging/production environments t
 - Sync from staging or production environments
 - SSH connection support with key authentication
 - Automatic database dump, download, and import
-- Two-step dump strategy (structure + data) for consistent snapshots
-- Table filtering for performance and GDPR compliance (62 tables by default)
-- DEFINER clause stripping for cross-server compatibility
-- Foreign key and unique check optimization during import
+- Table filtering for performance and GDPR compliance
 - Local environment overrides (URLs, domains, system config)
-- Raw SQL execution post-import
 - Post-sync console commands (e.g. deactivate plugins, create users)
 - Apply config overrides without a full sync (`--apply-config-only`)
 - DDEV compatible
-- Gzip compression support
-- Automatic cache clearing
 
 ## Installation
 
@@ -339,7 +333,7 @@ This is handled automatically. Both the remote dump and local import pipeline st
 
 ## Requirements
 
-- Shopware 6.7+
+- Shopware 6.6+ & 6.7+
 - PHP 8.1+
 - SSH access to remote servers
 - `mysqldump` on the remote server
