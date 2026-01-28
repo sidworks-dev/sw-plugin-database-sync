@@ -138,16 +138,32 @@ class DatabaseSyncService
 
     public function fetchRemoteDbConfig(array $sshConfig, string $sshOptions, SymfonyStyle $io): bool
     {
-        $io->text('Reading remote .env file...');
+        $io->text('Reading remote environment configuration...');
 
-        $envPath = rtrim($sshConfig['project_path'], '/') . '/.env';
+        $projectPath = rtrim($sshConfig['project_path'], '/');
         
+        // Priority: .env.local.php > .env.local > .env
+        // .env.local.php is a cached PHP array that takes full precedence
+        // Otherwise, .env is loaded first, then .env.local overrides it
+        
+        $envLocalPhpPath = $projectPath . '/.env.local.php';
+        $envLocalPath = $projectPath . '/.env.local';
+        $envPath = $projectPath . '/.env';
+
+        // First, check if .env.local.php exists (cached env)
+        $checkCommand = sprintf(
+            'if [ -f %s ]; then echo "env.local.php"; elif [ -f %s ]; then echo "env.local"; elif [ -f %s ]; then echo "env"; else echo "none"; fi',
+            escapeshellarg($envLocalPhpPath),
+            escapeshellarg($envLocalPath),
+            escapeshellarg($envPath)
+        );
+
         $sshCommand = sprintf(
             'ssh %s %s@%s %s',
             $sshOptions,
             escapeshellarg($sshConfig['user']),
             escapeshellarg($sshConfig['host']),
-            escapeshellarg('cat ' . escapeshellarg($envPath))
+            escapeshellarg($checkCommand)
         );
 
         $process = Process::fromShellCommandline($sshCommand);
@@ -155,36 +171,160 @@ class DatabaseSyncService
         $process->run();
 
         if (!$process->isSuccessful()) {
-            $errorOutput = $process->getErrorOutput();
-            
-            if (str_contains($errorOutput, 'Permission denied') || 
-                str_contains($errorOutput, 'Host key verification failed') || 
-                str_contains($errorOutput, 'Connection refused')) {
-                $io->error('SSH connection failed!');
-                $io->text('');
-                $io->text('If running inside DDEV, first run: <comment>ddev auth ssh</comment>');
-                $io->text('This forwards your SSH agent to the container.');
-                $io->text('');
-                $io->text('Other options:');
-                $io->text('  - Configure SSH key in plugin settings');
-                $io->text('  - Ensure SSH key is loaded in your SSH agent');
-            } else {
-                $io->error('Failed to read remote .env file!');
-                $io->text($errorOutput);
-            }
+            $this->handleSshError($process->getErrorOutput(), $io);
             return false;
         }
 
-        // Parse the .env content
-        $envContent = $process->getOutput();
+        $availableEnvFile = trim($process->getOutput());
+
+        if ($availableEnvFile === 'none') {
+            $io->error('No .env file found on remote server.');
+            $io->text('Checked: .env.local.php, .env.local, .env');
+            return false;
+        }
+
+        // Handle .env.local.php (PHP array format)
+        if ($availableEnvFile === 'env.local.php') {
+            $io->text('  Found .env.local.php (cached environment)');
+            return $this->fetchRemoteEnvFromPhp($sshConfig, $sshOptions, $envLocalPhpPath, $io);
+        }
+
+        // For .env and .env.local, we need to merge them
+        // First read .env as base
+        $io->text('  Reading .env...');
+        $envContent = $this->fetchRemoteFile($sshConfig, $sshOptions, $envPath, $io);
+        
+        if ($envContent === null) {
+            return false;
+        }
+
         $this->remoteDbConfig = $this->parseEnvContent($envContent);
 
+        // Then check if .env.local exists and override
+        $checkLocalCommand = sprintf('[ -f %s ] && echo "exists"', escapeshellarg($envLocalPath));
+        $sshCommand = sprintf(
+            'ssh %s %s@%s %s',
+            $sshOptions,
+            escapeshellarg($sshConfig['user']),
+            escapeshellarg($sshConfig['host']),
+            escapeshellarg($checkLocalCommand)
+        );
+
+        $process = Process::fromShellCommandline($sshCommand);
+        $process->setTimeout(30);
+        $process->run();
+
+        if (trim($process->getOutput()) === 'exists') {
+            $io->text('  Reading .env.local (overrides)...');
+            $envLocalContent = $this->fetchRemoteFile($sshConfig, $sshOptions, $envLocalPath, $io);
+            
+            if ($envLocalContent !== null) {
+                // Parse .env.local and merge (override) into base config
+                $localConfig = $this->parseEnvContent($envLocalContent);
+                $this->remoteDbConfig = array_merge($this->remoteDbConfig, array_filter($localConfig));
+            }
+        }
+
         if (empty($this->remoteDbConfig['name'])) {
-            $io->error('Could not find DATABASE_NAME or DATABASE_URL in remote .env file.');
+            $io->error('Could not find DATABASE_NAME or DATABASE_URL in remote environment files.');
             return false;
         }
 
         return true;
+    }
+
+    private function fetchRemoteFile(array $sshConfig, string $sshOptions, string $filePath, SymfonyStyle $io): ?string
+    {
+        $sshCommand = sprintf(
+            'ssh %s %s@%s %s',
+            $sshOptions,
+            escapeshellarg($sshConfig['user']),
+            escapeshellarg($sshConfig['host']),
+            escapeshellarg('cat ' . escapeshellarg($filePath))
+        );
+
+        $process = Process::fromShellCommandline($sshCommand);
+        $process->setTimeout(30);
+        $process->run();
+
+        if (!$process->isSuccessful()) {
+            $this->handleSshError($process->getErrorOutput(), $io);
+            return null;
+        }
+
+        return $process->getOutput();
+    }
+
+    private function fetchRemoteEnvFromPhp(array $sshConfig, string $sshOptions, string $filePath, SymfonyStyle $io): bool
+    {
+        // .env.local.php returns a PHP array, we need to execute it and extract DATABASE_URL
+        $phpCommand = sprintf(
+            'php -r %s',
+            escapeshellarg(sprintf(
+                '$env = require %s; echo $env["DATABASE_URL"] ?? "";',
+                escapeshellarg($filePath)
+            ))
+        );
+
+        $sshCommand = sprintf(
+            'ssh %s %s@%s %s',
+            $sshOptions,
+            escapeshellarg($sshConfig['user']),
+            escapeshellarg($sshConfig['host']),
+            escapeshellarg($phpCommand)
+        );
+
+        $process = Process::fromShellCommandline($sshCommand);
+        $process->setTimeout(30);
+        $process->run();
+
+        if (!$process->isSuccessful()) {
+            $this->handleSshError($process->getErrorOutput(), $io);
+            return false;
+        }
+
+        $databaseUrl = trim($process->getOutput());
+
+        if (empty($databaseUrl)) {
+            $io->error('Could not find DATABASE_URL in .env.local.php');
+            return false;
+        }
+
+        $parsed = $this->parseDatabaseUrl($databaseUrl);
+
+        if (!$parsed) {
+            $io->error('Could not parse DATABASE_URL from .env.local.php');
+            return false;
+        }
+
+        $this->remoteDbConfig = [
+            'host' => $parsed['host'] ?? 'localhost',
+            'port' => $parsed['port'] ?? 3306,
+            'name' => $parsed['name'] ?? '',
+            'user' => $parsed['user'] ?? '',
+            'pass' => $parsed['pass'] ?? '',
+        ];
+
+        return true;
+    }
+
+    private function handleSshError(string $errorOutput, SymfonyStyle $io): void
+    {
+        if (str_contains($errorOutput, 'Permission denied') || 
+            str_contains($errorOutput, 'Host key verification failed') || 
+            str_contains($errorOutput, 'Connection refused')) {
+            $io->error('SSH connection failed!');
+            $io->text('');
+            $io->text('If running inside DDEV, first run: <comment>ddev auth ssh</comment>');
+            $io->text('This forwards your SSH agent to the container.');
+            $io->text('');
+            $io->text('Other options:');
+            $io->text('  - Configure SSH key in plugin settings');
+            $io->text('  - Ensure SSH key is loaded in your SSH agent');
+        } else {
+            $io->error('Failed to read remote file!');
+            $io->text($errorOutput);
+        }
     }
 
     public function getRemoteDbConfig(): ?array
@@ -336,7 +476,7 @@ class DatabaseSyncService
             $baseDumpFileEsc
         );
 
-        // Combine both commands
+        // Combine both commands: structure dump, then data dump
         $combinedCommand = sprintf('%s && %s', $structureCommand, $dataCommand);
         
         // Add gzip if requested
@@ -435,7 +575,6 @@ class DatabaseSyncService
         SymfonyStyle $io
     ): bool {
         $io->text('Importing database into local environment...');
-        $io->text('Stripping DEFINER statements...');
 
         $mysqlArgs = [
             'mysql',
@@ -450,29 +589,25 @@ class DatabaseSyncService
         // This prevents deadlocks and speeds up the import significantly
         $initCommands = 'SET FOREIGN_KEY_CHECKS=0; SET UNIQUE_CHECKS=0; SET SQL_MODE="NO_AUTO_VALUE_ON_ZERO";';
 
-        // Strip DEFINER statements locally before import to avoid privilege errors
-        // This handles views, stored procedures, triggers, and events in all MySQL comment formats
+        // DEFINER statements are already stripped during remote dump creation
+        // so we just need to decompress (if gzip) and pipe to mysql
         if ($useGzip) {
             $importCommand = sprintf(
-                '(echo %s; gunzip -c %s | LANG=C LC_CTYPE=C LC_ALL=C sed -e %s; echo "SET FOREIGN_KEY_CHECKS=1; SET UNIQUE_CHECKS=1;") | %s',
+                '(echo %s; gunzip -c %s; echo "SET FOREIGN_KEY_CHECKS=1; SET UNIQUE_CHECKS=1;") | %s',
                 escapeshellarg($initCommands),
                 escapeshellarg($localDumpFile),
-                escapeshellarg('s/\/\*![0-9]*\s*DEFINER=[^*]*\*\///g'),
                 implode(' ', array_map('escapeshellarg', $mysqlArgs))
             );
-            $process = Process::fromShellCommandline($importCommand);
         } else {
-            // For non-gzipped files, use sed to strip DEFINER before piping to mysql
             $importCommand = sprintf(
-                '(echo %s; LANG=C LC_CTYPE=C LC_ALL=C sed -e %s %s; echo "SET FOREIGN_KEY_CHECKS=1; SET UNIQUE_CHECKS=1;") | %s',
+                '(echo %s; cat %s; echo "SET FOREIGN_KEY_CHECKS=1; SET UNIQUE_CHECKS=1;") | %s',
                 escapeshellarg($initCommands),
-                escapeshellarg('s/\/\*![0-9]*\s*DEFINER=[^*]*\*\///g'),
                 escapeshellarg($localDumpFile),
                 implode(' ', array_map('escapeshellarg', $mysqlArgs))
             );
-            $process = Process::fromShellCommandline($importCommand);
         }
 
+        $process = Process::fromShellCommandline($importCommand);
         $process->setTimeout(600); // 10 minutes
         $process->run();
 

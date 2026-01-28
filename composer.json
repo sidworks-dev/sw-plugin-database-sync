@@ -2,7 +2,7 @@
     "name": "sidworks/sw-plugin-database-sync",
     "description": "Sidworks Plugin Database Sync",
     "type": "shopware-platform-plugin",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "require": {
         "shopware/core": "~6.6.0 || ~6.7.0"
     },

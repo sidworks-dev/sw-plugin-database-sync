@@ -210,7 +210,7 @@ bin/console sidworks:db:sync production
 
 | Option | Description |
 |--------|-------------|
-| `--keep-dump, -k` | Keep the dump file in `var/dumps/` after import |
+| `--keep-dump, -k` | Keep the dump file in the project root after import |
 | `--skip-import` | Only download the dump, don't import |
 | `--no-gzip` | Don't compress the dump (faster for small databases) |
 | `--skip-overrides` | Skip applying local environment overrides |
@@ -264,7 +264,7 @@ ddev exec bin/console sidworks:db:sync staging
 ### Execution Flow
 
 1. **Validate configuration** — Check required SSH and environment settings
-2. **Fetch remote `.env`** — Read database credentials from the remote server via SSH
+2. **Fetch remote environment** — Read database credentials from the remote server via SSH (supports `.env.local.php`, `.env.local`, and `.env`)
 3. **Create remote dump** — Two-step mysqldump (structure + data) on the remote server
 4. **Download dump** — Transfer the compressed dump via rsync
 5. **Cleanup remote** — Delete the dump file from the remote server
@@ -321,11 +321,19 @@ The import pipeline applies several optimizations:
 Your SSH user needs:
 - Read access to the remote `.env` file
 - Execute permissions for `mysqldump`
-- Write permissions to `/tmp` on the remote server
+- Write permissions to the remote project directory (for temporary dump file)
 
 ### Remote .env Not Found
 
 Verify that `SW_DB_SYNC_[ENV]_PROJECT_PATH` points to the Shopware root directory containing the `.env` file.
+
+The plugin reads remote environment files in this priority order:
+
+1. **`.env.local.php`** — Cached PHP array (takes full precedence if exists)
+2. **`.env.local`** — Local overrides (merged on top of `.env`)
+3. **`.env`** — Base environment file
+
+This matches Symfony's environment loading behavior.
 
 ### Import Fails with DEFINER Errors
 

@@ -141,19 +141,10 @@ class DatabaseSyncCommand extends Command
             return Command::SUCCESS;
         }
 
-        // Create dumps directory
-        $dumpDir = $this->syncService->getProjectDir() . '/var/dumps';
-        if (!is_dir($dumpDir)) {
-            if (!@mkdir($dumpDir, 0775, true) && !is_dir($dumpDir)) {
-                $io->error('Could not create dumps directory: ' . $dumpDir);
-                $io->text('Please create it manually: mkdir -p var/dumps && chmod 775 var/dumps');
-                return Command::FAILURE;
-            }
-        }
-
         $timestamp = date('Y-m-d_His');
-        $remoteDumpFile = '/tmp/shopware_sync_' . $timestamp . '.sql' . ($useGzip ? '.gz' : '');
-        $localDumpFile = $dumpDir . '/sync_' . $environment . '_' . $timestamp . '.sql' . ($useGzip ? '.gz' : '');
+        $dumpFileName = 'sync_' . $environment . '_' . $timestamp . '.sql' . ($useGzip ? '.gz' : '');
+        $remoteDumpFile = rtrim($sshConfig['project_path'], '/') . '/' . $dumpFileName;
+        $localDumpFile = $this->syncService->getProjectDir() . '/' . $dumpFileName;
 
         // Step 1: Create dump on remote server
         $io->section('Step 1/4: Creating remote dump');
