@@ -576,6 +576,15 @@ class DatabaseSyncService
     ): bool {
         $io->text('Importing database into local environment...');
 
+        if (!file_exists($localDumpFile) || filesize($localDumpFile) === 0) {
+            $io->error('Local dump file is missing or empty.');
+            return false;
+        }
+
+        if (!$this->dropLocalTables($io)) {
+            return false;
+        }
+
         $mysqlArgs = [
             'mysql',
             '--host=' . $localDbConfig['host'],
@@ -619,6 +628,46 @@ class DatabaseSyncService
 
         $io->text('<info>✓ Import completed successfully</info>');
         return true;
+    }
+
+    private function dropLocalTables(SymfonyStyle $io): bool
+    {
+        $io->text('Resetting local database schema...');
+
+        try {
+            $views = $this->connection->fetchFirstColumn(
+                "SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME"
+            );
+            $tables = $this->connection->fetchFirstColumn(
+                "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+            );
+
+            if (empty($views) && empty($tables)) {
+                $io->text('  No local tables found.');
+                return true;
+            }
+
+            $this->connection->executeStatement('SET FOREIGN_KEY_CHECKS=0');
+
+            foreach ($views as $view) {
+                $this->connection->executeStatement('DROP VIEW IF EXISTS ' . $this->connection->quoteIdentifier($view));
+            }
+
+            foreach ($tables as $table) {
+                $this->connection->executeStatement('DROP TABLE IF EXISTS ' . $this->connection->quoteIdentifier($table));
+            }
+
+            $io->text(sprintf('<info>✓ Dropped %d local table(s) and %d view(s)</info>', count($tables), count($views)));
+            return true;
+        } catch (\Throwable $e) {
+            $io->error('Failed to reset local database schema: ' . $e->getMessage());
+            return false;
+        } finally {
+            try {
+                $this->connection->executeStatement('SET FOREIGN_KEY_CHECKS=1');
+            } catch (\Throwable) {
+            }
+        }
     }
 
     public function applyLocalOverrides(string $localDomain, array $domainMappings, SymfonyStyle $io): bool
